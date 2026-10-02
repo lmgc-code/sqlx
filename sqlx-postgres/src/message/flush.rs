@@ -6,7 +6,13 @@ use std::num::Saturating;
 /// but forces the backend to deliver any data pending in its output buffers.
 ///
 /// A Flush must be sent after any extended-query command except Sync, if the
-/// frontend wishes to examine the results of that command before issuing more commands.
+/// frontend wishes to examine the results of that command before issuing more
+/// commands.
+///
+/// Part of the PostgreSQL frontend wire-protocol surface; this driver
+/// batches with Sync instead, so the type is intentionally not constructed
+/// here — kept for protocol completeness.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Flush;
 

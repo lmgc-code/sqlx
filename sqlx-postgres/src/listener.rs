@@ -332,7 +332,10 @@ impl PgListener {
     ///
     /// This is helpful if you want to retrieve all buffered notifications and process them in batches.
     pub fn next_buffered(&mut self) -> Option<PgNotification> {
-        if let Ok(Some(notification)) = self.buffer_rx.try_next() {
+        // try_recv (the non-deprecated futures-channel API): yields the
+        // buffered notification, or Disconnected/Empty when the channel
+        // has none — both map to "nothing buffered".
+        if let Ok(notification) = self.buffer_rx.try_recv() {
             Some(PgNotification(notification))
         } else {
             None

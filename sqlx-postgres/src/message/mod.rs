@@ -73,6 +73,10 @@ pub enum FrontendMessageFormat {
     CopyFail = b'f',
     Describe = b'D',
     Execute = b'E',
+    /// Wire-protocol completeness: Flush is part of the frontend message
+    /// surface; this driver batches with Sync instead, so the variant is
+    /// intentionally not constructed here.
+    #[allow(dead_code)]
     Flush = b'H',
     Parse = b'P',
     /// This message format is polymorphic. It's used for:
