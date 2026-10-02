@@ -6,11 +6,19 @@ use std::num::Saturating;
 pub struct SaslInitialResponse<'a> {
     pub response: &'a str,
     pub plus: bool,
+    /// SASL mechanism the client selected. `None` keeps the legacy
+    /// behavior of deriving the name from `plus` (SCRAM-SHA-256[-PLUS]).
+    /// `Some("OAUTHBEARER")` selects PostgreSQL 18's OAuth mechanism
+    /// (RFC 7628).
+    pub mechanism: Option<&'static str>,
 }
 
 impl SaslInitialResponse<'_> {
     #[inline(always)]
     fn selected_mechanism(&self) -> &'static str {
+        if let Some(mechanism) = self.mechanism {
+            return mechanism;
+        }
         if self.plus {
             "SCRAM-SHA-256-PLUS"
         } else {

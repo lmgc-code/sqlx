@@ -15,6 +15,12 @@ const USERNAME_ATTR: &str = "n";
 const CLIENT_PROOF_ATTR: &str = "p";
 const NONCE_ATTR: &str = "r";
 
+// OAUTHBEARER (RFC 7628) — the SASL mechanism PostgreSQL 18 selects for
+// its native `oauth` HBA method. The bearer token arrives via the
+// `oauth_token` field of the connect options (set per-connection by the
+// caller from its token cache).
+const OAUTHBEARER_MECHANISM: &str = "OAUTHBEARER";
+
 pub(crate) async fn authenticate(
     stream: &mut PgStream,
     options: &PgConnectOptions,
@@ -22,6 +28,7 @@ pub(crate) async fn authenticate(
 ) -> Result<(), Error> {
     let mut has_sasl = false;
     let mut has_sasl_plus = false;
+    let mut has_oauthbearer = false;
     let mut unknown = Vec::new();
 
     for mechanism in data.mechanisms() {
@@ -34,10 +41,23 @@ pub(crate) async fn authenticate(
                 has_sasl_plus = true;
             }
 
+            OAUTHBEARER_MECHANISM => {
+                has_oauthbearer = true;
+            }
+
             _ => {
                 unknown.push(mechanism.to_owned());
             }
         }
+    }
+
+    // Prefer OAUTHBEARER when the server offers it AND the caller supplied
+    // a bearer token; fall back to SCRAM for password credentials. A server
+    // may offer both mechanisms — the choice follows the credential type
+    // the options carry, so the same driver serves oauth-only and
+    // password-only clusters without configuration.
+    if has_oauthbearer && options.oauth_token.is_some() {
+        return oauthbearer_authenticate(stream, options).await;
     }
 
     if !has_sasl_plus && !has_sasl {
@@ -71,6 +91,7 @@ pub(crate) async fn authenticate(
         .send(SaslInitialResponse {
             response: &client_first_message,
             plus: false,
+            mechanism: None,
         })
         .await?;
 
@@ -157,6 +178,84 @@ pub(crate) async fn authenticate(
     mac.verify_slice(&data.verifier).map_err(Error::protocol)?;
 
     Ok(())
+}
+
+// ── OAUTHBEARER (RFC 7628) ──────────────────────────────────────────────
+//
+// PostgreSQL 18 advertises OAUTHBEARER for `oauth` HBA rules. The exchange:
+//   client-initial-response: "n,,\x01auth=Bearer <token>\x01\x01"
+//     (gs2-header "n,," — no authzid, no channel binding; the client-first
+//     message carries a single `auth` k=v pair, terminated by a bare 0x01)
+//   server continue: empty challenge = token accepted (RFC 7628 §3.2.2);
+//     a non-empty challenge is a JSON error document — the client replies
+//     with the client-final "gs2-header-b64 empty + 0x01 + status json"
+//     failure form and the exchange terminates in an ErrorResponse.
+//   client-final-response: empty string on the success path.
+//   server final: Authentication::SaslFinal (ignored data) then
+//     Authentication::Ok — or Ok directly.
+async fn oauthbearer_authenticate(
+    stream: &mut PgStream,
+    options: &PgConnectOptions,
+) -> Result<(), Error> {
+    let token = options
+        .oauth_token
+        .as_deref()
+        .expect("oauth_token presence checked by authenticate");
+
+    // client-initial-response (RFC 7628 §3.1).
+    let mut initial = String::with_capacity(GS2_HEADER.len() + token.len() + 16);
+    initial.push_str(GS2_HEADER);
+    initial.push('\u{1}');
+    initial.push_str("auth=Bearer ");
+    initial.push_str(token);
+    initial.push('\u{1}');
+    initial.push('\u{1}');
+
+    stream
+        .send(SaslInitialResponse {
+            response: &initial,
+            plus: false,
+            mechanism: Some(OAUTHBEARER_MECHANISM),
+        })
+        .await?;
+
+    let cont = match stream.recv_expect().await? {
+        Authentication::SaslContinue(data) => data,
+        auth => {
+            return Err(err_protocol!(
+                "expected SASLContinue but received {:?}",
+                auth
+            ));
+        }
+    };
+
+    // An empty server challenge means the token was accepted. A non-empty
+    // one is the RFC 7628 §3.2.2 error document (JSON); complete the
+    // protocol's failure form so the server sends its ErrorResponse, then
+    // surface the reason verbatim.
+    if !cont.message.is_empty() {
+        stream.send(SaslResponse("")).await?;
+        let reason = cont.message.clone();
+        return Err(Error::Protocol(format!("OAUTHBEARER rejected: {reason}")));
+    }
+
+    // client-final-response (success path): empty.
+    stream.send(SaslResponse("")).await?;
+
+    match stream.recv_expect().await? {
+        Authentication::SaslFinal(_) => match stream.recv_expect().await? {
+            Authentication::Ok => Ok(()),
+            auth => Err(err_protocol!(
+                "expected AuthenticationOk after SASLFinal but received {:?}",
+                auth
+            )),
+        },
+        Authentication::Ok => Ok(()),
+        auth => Err(err_protocol!(
+            "expected SASLFinal or AuthenticationOk but received {:?}",
+            auth
+        )),
+    }
 }
 
 // nonce is a sequence of random printable bytes

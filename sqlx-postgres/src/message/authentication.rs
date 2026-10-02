@@ -141,6 +141,14 @@ impl ProtocolDecode<'_> for AuthenticationSaslContinue {
         // r=/z+giZiTxAH7r8sNAeHr7cvpqV3uo7G/bJBIJO3pjVM7t3ng,s=4UV68bIkC8f9/X8xH7aPhg==,i=4096
 
         for item in buf.split(|b| *b == b',') {
+            // Guard short/empty segments: the OAUTHBEARER success challenge
+            // is an EMPTY buffer (RFC 7628 §3.2.2) and its error challenges
+            // are JSON documents — neither is SCRAM k=v shaped, and an
+            // unguarded item[0]/&item[2..] would panic on them. The full
+            // payload stays available via `message`.
+            if item.len() < 2 {
+                continue;
+            }
             let key = item[0];
             let value = &item[2..];
 

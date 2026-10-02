@@ -20,6 +20,11 @@ pub struct PgConnectOptions {
     pub(crate) socket: Option<PathBuf>,
     pub(crate) username: String,
     pub(crate) password: Option<String>,
+    /// OAuth bearer token for PostgreSQL 18's native `oauth` HBA method
+    /// (OAUTHBEARER, RFC 7628). When set and the server offers
+    /// OAUTHBEARER, the SASL flow prefers the token over the password;
+    /// the `password` field is then unused.
+    pub(crate) oauth_token: Option<String>,
     pub(crate) database: Option<String>,
     pub(crate) ssl_mode: PgSslMode,
     pub(crate) ssl_root_cert: Option<CertificateInput>,
@@ -74,6 +79,7 @@ impl PgConnectOptions {
             socket: None,
             username,
             password: var("PGPASSWORD").ok(),
+            oauth_token: None,
             database,
             ssl_root_cert: var("PGSSLROOTCERT").ok().map(CertificateInput::from),
             ssl_client_cert: var("PGSSLCERT").ok().map(CertificateInput::from),
@@ -181,6 +187,27 @@ impl PgConnectOptions {
     /// ```
     pub fn password(mut self, password: &str) -> Self {
         self.password = Some(password.to_owned());
+        self
+    }
+
+    /// Sets the OAuth bearer token to use if the server demands
+    /// PostgreSQL 18 native OAuth authentication (OAUTHBEARER).
+    ///
+    /// When set and the server advertises OAUTHBEARER, the SASL flow
+    /// prefers the token; [`PgConnectOptions::password`] is then unused.
+    /// SCRAM-SHA-256 remains available for servers that don't offer
+    /// OAUTHBEARER.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sqlx_postgres::PgConnectOptions;
+    /// let options = PgConnectOptions::new()
+    ///     .username("postgres")
+    ///     .oauth_token("eyJhbGciOi...");
+    /// ```
+    pub fn oauth_token(mut self, token: &str) -> Self {
+        self.oauth_token = Some(token.to_owned());
         self
     }
 
